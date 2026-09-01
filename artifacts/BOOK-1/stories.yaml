@@ -1,0 +1,214 @@
+stories:
+  - title: Add author column and full-text search index to catalog.products
+    description: >
+      Create Flyway migration V5__catalog_add_search.sql in the catalog module's migration
+      folder. Add a nullable author text column to catalog.products. Backfill the author for
+      the 15 seeded books listed in the spec, matched by product code, only where author is
+      currently null or blank. Add a generated search_vector tsvector column built from name
+      (weight A) and author (weight B) using the simple text search configuration, and create
+      a GIN index on it. Run all statements inside Flyway's default per-migration transaction,
+      with no new .conf file added. Verify by running the migration against a database that
+      already has the 15 seeded products and confirming existing columns (code, name,
+      description, image_url, price, deleted_at) are unchanged and the new columns and index
+      exist.
+    acceptanceCriteria:
+      - Migration file V5__catalog_add_search.sql exists in src/main/resources/db/migration/catalog and is the only new .sql file, with no new .conf file added
+      - Running the migration against a fresh database and against a database already containing the 15 seeded products both succeed without error
+      - After migration, the 15 seeded products have the exact author values listed in the spec's backfill table, matched by code
+      - A product whose author was already set before the migration keeps its existing value and is not overwritten
+      - A product row not among the 15 seeded codes is left with a null author
+      - Existing values of code, name, description, image_url, price, and deleted_at are unchanged for every row after migration
+      - search_vector is a GENERATED ALWAYS ... STORED column combining name and author via to_tsvector('simple', ...), and idx_products_search_vector is a GIN index on it
+      - Running the deployment a second time against an already-migrated database does not reattempt the migration
+    dependsOn: []
+    estimate: M
+
+  - title: Add automated test for migration performance at 100,000 rows
+    description: >
+      Add an automated test, tagged as slow if needed, that seeds catalog.products with
+      100,000 product rows and then runs the V5 migration against that table, asserting it
+      completes successfully within 60 seconds. Wire the test into the pipeline that gates
+      merges to main. This is the check that the accepted row-count ceiling for the
+      migration's table lock actually holds, rather than being verified only against the 15
+      seeded rows.
+    acceptanceCriteria:
+      - Test seeds catalog.products with 100,000 rows before the author column, backfill, search_vector column, and GIN index exist
+      - Test runs the V5 migration against that seeded table and asserts it completes within 60 seconds
+      - Test fails if the migration exceeds 60 seconds or errors
+      - Test runs as part of the pipeline that gates merges to main
+    dependsOn:
+      - Add author column and full-text search index to catalog.products
+    estimate: M
+
+  - title: Implement full-text search, price filtering, and sorting in the catalog repository
+    description: >
+      Add a native SQL query behind ProductRepository that searches catalog.products by
+      matching a Postgres tsquery built from shopper input against search_vector, filters by
+      optional inclusive minPrice and maxPrice bounds, and orders results by one of five fixed
+      fragments (price ascending, price descending, title ascending, title descending, or
+      relevance via ts_rank), each with product code as a final tie-break. Build the tsquery
+      on the Java side by splitting input on whitespace, stripping tsquery operator characters
+      from each token, joining tokens with AND, and suffixing the last token with :* for
+      prefix matching; pass the result only as a bind parameter to to_tsquery('simple', ?),
+      never concatenated into SQL. Select the ORDER BY fragment from a fixed whitelist keyed
+      by a sort enum, never built from request text. Reuse the existing deleted_at is null
+      scoping so results stay a strict subset of what the full listing returns. Verify with
+      unit and integration tests covering case-insensitivity, multi-word AND matching, prefix
+      matching on the last word, price bound combinations, tie-breaking on price and title
+      ties in the seed data, and punctuation/quote/boolean-operator input such as &, |, ! and
+      a lone double quote producing zero results rather than an error.
+    acceptanceCriteria:
+      - Searching "hunger games", "Hunger Games", and "HUNGER GAMES" return the same products
+      - Searching "alchemist coelho" returns The Alchemist and searching "alchemist tolkien" returns nothing
+      - Searching "alchem" returns The Alchemist via prefix matching on the last word
+      - Search matches only title and author; description, code, and image_url are never matched
+      - A minPrice and maxPrice both set to 32.0 return only products priced at exactly 32.0
+      - Sorting by price or title in either direction always breaks ties on product code, verified against seeded books sharing a price of 44.50 or 14.50 so paging never repeats or skips a product
+      - When no sort is chosen and the search text is non-blank, results are ordered by ts_rank relevance, most relevant first
+      - When no sort is chosen and the search text is blank, results are ordered by title ascending
+      - Input containing &, |, !, or a double quote does not throw and returns either matches or an empty result set
+      - The ORDER BY fragment is chosen from a fixed set of five options keyed by an enum; no code path builds ORDER BY by concatenating request input
+      - Soft-deleted products (deleted_at set) never appear in results regardless of search or filter criteria
+      - The query is reached only through ProductRepository/ProductService; no other code path queries catalog.products for search
+    dependsOn:
+      - Add author column and full-text search index to catalog.products
+    estimate: L
+
+  - title: Add automated test asserting search uses the GIN index
+    description: >
+      Add an automated test that loads at least 5,000 products into catalog.products, runs
+      EXPLAIN on the search query the application issues, and asserts the plan contains a
+      bitmap index scan on idx_products_search_vector and no sequential scan on
+      catalog.products. Do not set enable_seqscan = off. Run the test in the same pipeline as
+      the rest of the suite, so dropping the index or rewriting the query as a LIKE scan makes
+      this test fail.
+    acceptanceCriteria:
+      - Test seeds at least 5,000 rows into catalog.products
+      - Test runs EXPLAIN on the exact search query issued by ProductRepository and parses the plan
+      - Test asserts the plan includes a bitmap index scan on idx_products_search_vector
+      - Test asserts the plan includes no sequential scan on catalog.products
+      - Test does not set enable_seqscan = off anywhere
+      - Temporarily dropping the index or replacing the query with a LIKE scan causes the test to fail
+      - Test runs in the pipeline that gates merges to main
+    dependsOn:
+      - Implement full-text search, price filtering, and sorting in the catalog repository
+    estimate: S
+
+  - title: Add automated test verifying seeded author search results
+    description: >
+      Add an automated test that runs after the V5 migration and asserts that searching
+      "coelho" returns exactly The Alchemist and searching "martin" returns exactly A Game of
+      Thrones, proving the backfill data is correct and reachable through search rather than
+      only checking that the UPDATE statement executed without error.
+    acceptanceCriteria:
+      - After the migration runs, searching "coelho" returns exactly one product, The Alchemist
+      - After the migration runs, searching "martin" returns exactly one product, A Game of Thrones
+    dependsOn:
+      - Implement full-text search, price filtering, and sorting in the catalog repository
+    estimate: S
+
+  - title: Add author field to admin product create and edit forms
+    description: >
+      Add an optional author field to CreateProductCmd and UpdateProductCmd with
+      @Size(max=255) validation and the message "Author is limited to 255 characters". Wire
+      the field through ProductMapper into ProductEntity.author and ProductDto. Add the author
+      input to the existing admin product create and edit Thymeleaf forms, following the
+      existing BindingResult/th:errors pattern used for code, name, and price. Verify an admin
+      can set and change a product's author, that a value over 255 characters is rejected with
+      the product unsaved, and that the admin routes remain restricted to ROLE_ADMIN with no
+      change to existing security rules.
+    acceptanceCriteria:
+      - Admin create and edit forms show an author input and save it to the product
+      - Submitting an author longer than 255 characters re-renders the form with the message "Author is limited to 255 characters" and does not save the product
+      - An admin can change an existing product's author through the edit form
+      - A member or unauthenticated visitor requesting the admin product form is refused by the existing /admin/** access rule, unchanged by this story
+      - The admin product list at /admin/catalog/products keeps showing all products including soft-deleted ones and gains no search, filter, or sort controls
+    dependsOn:
+      - Add author column and full-text search index to catalog.products
+    estimate: M
+
+  - title: Extend GET /products with search, price filter, sort, and paging parameters
+    description: >
+      Add optional q, minPrice, maxPrice, and sort query parameters to the storefront GET
+      /products route in ProductWebController, bound through a @ModelAttribute criteria object
+      validated with @Valid, following the existing BindingResult pattern from the admin
+      forms. Reject a q longer than 200 characters with the message "Search is limited to 200
+      characters", a non-numeric or negative price bound with "Enter a price of 0 or more",
+      and a minPrice greater than maxPrice with "Minimum price must be less than or equal to
+      maximum price"; each rejection re-renders the current view with an empty result grid and
+      the search box holding what the shopper typed. Treat blank, missing, or whitespace-only
+      q as no search. Ignore an unrecognized sort value and fall back to the default sort with
+      no error. Clamp a page number below 1 to 1, and render an empty grid with working
+      pagination for a page number past the last page. Keep existing /products and
+      /products?page=N calls working unchanged. Apply this to both the full-page view and the
+      htmx partial view using the same ProductService call.
+    acceptanceCriteria:
+      - GET /products with no parameters behaves exactly as it does today
+      - GET /products?page=N with no other parameters behaves exactly as it does today
+      - A q of only whitespace returns the full catalogue in the default order and paging
+      - A q over 200 characters shows "Search is limited to 200 characters", an empty result grid, and keeps the typed text in the search box
+      - A non-numeric or negative minPrice or maxPrice shows "Enter a price of 0 or more" and an empty result grid
+      - A minPrice greater than maxPrice shows "Minimum price must be less than or equal to maximum price" and an empty result grid
+      - An unrecognized sort value is ignored, the default sort applies, and no error is shown
+      - A page number below 1 is treated as page 1
+      - A page number past the last page renders an empty grid with working pagination links back to earlier pages, and does not error
+      - The same q, minPrice, maxPrice, and sort behavior applies identically whether the request is a full page load or an htmx partial request
+      - A signed-in member and an unauthenticated visitor get identical results for the same parameters
+    dependsOn:
+      - Implement full-text search, price filtering, and sorting in the catalog repository
+    estimate: M
+
+  - title: Prevent database error details from reaching the shopper on search failure
+    description: >
+      When a search request fails because the database is unreachable or times out, ensure
+      the shopper sees the application's standard error page with no database object names in
+      the message, while the underlying exception is still logged. Check whether
+      CatalogExceptionHandler's generic handler exposing e.getMessage() on error/500 would
+      leak schema, table, or column names for this query path, and if so, either catch
+      DataAccessException in the search code path and rethrow with a generic message, or stop
+      exposing e.getMessage() for unclassified exceptions in the handler.
+    acceptanceCriteria:
+      - Simulating a database-unreachable or query-timeout condition during a search request renders the standard error page rather than a stack trace
+      - The rendered error page contains no schema, table, or column names
+      - The underlying exception is still logged at error level
+    dependsOn:
+      - Extend GET /products with search, price filter, sort, and paging parameters
+    estimate: S
+
+  - title: Build storefront search, filter, sort, and paging UI
+    description: >
+      Extend the products.html and partials/products.html Thymeleaf views with a search
+      input, minimum and maximum price inputs, a sort control offering only price ascending,
+      price descending, title ascending, and title descending, a total-match count, and a
+      no-results state that shows a message and a single control that clears search, filters,
+      and sort and returns to the full catalogue. Extend pagination links to carry q,
+      minPrice, maxPrice, and sort alongside page, and ensure the browser URL reflects all
+      four parameters plus page so a copied URL reproduces the same result page. Verify in a
+      browser that both a full page load and an htmx-driven page change preserve the current
+      search, filters, and sort.
+    acceptanceCriteria:
+      - The products page shows one search box, a minimum price input, a maximum price input, and a sort control with exactly four options
+      - Total matching product count is shown on the page
+      - A search that matches nothing shows a no-results message and a single control that clears search, filters, and sort back to the full catalogue
+      - Moving to page 2 of a search keeps the same search text, price bounds, and sort
+      - The browser URL after a search, filter, sort, or page change contains q, minPrice, maxPrice, sort, and page as applicable, and reopening that URL directly reproduces the same result page
+      - Clearing the search box returns the shopper to the full catalogue without a manual page reload
+      - Paging, searching, filtering, and sorting all work identically when triggered via htmx partial swap and via a full page load
+    dependsOn:
+      - Extend GET /products with search, price filter, sort, and paging parameters
+    estimate: L
+
+  - title: Document the migration row-count ceiling in release notes
+    description: >
+      Add release notes for this change stating that the migration holds an exclusive lock on
+      catalog.products for its full duration, that this is accepted for tables up to 100,000
+      rows, the exact command a release engineer should run before applying the release
+      (select count(*) from catalog.products;), and the instruction to hold the release for
+      any environment where that count exceeds 100,000.
+    acceptanceCriteria:
+      - Release notes state the 100,000-row ceiling
+      - Release notes give the exact command select count(*) from catalog.products;
+      - Release notes instruct holding the release for an environment where the count exceeds 100,000
+    dependsOn:
+      - Add automated test for migration performance at 100,000 rows
+    estimate: S
