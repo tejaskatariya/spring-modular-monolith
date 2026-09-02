@@ -1,0 +1,39 @@
+# Provisioned at boot, so Grafana comes up with Tempo already wired and there
+# is nothing to click through in the UI.
+apiVersion: 1
+
+datasources:
+  - name: Tempo
+    type: tempo
+    uid: juno-tempo
+    # Tempo's query API, reached over the compose network by service name.
+    # Juno on the host uses the published 4318 instead; this port is Grafana's.
+    url: http://tempo:3200
+    access: proxy
+    isDefault: true
+    jsonData:
+      nodeGraph:
+        enabled: true
+      search:
+        hide: false
+      # Streaming search is off. With it on, Grafana opens a gRPC connection to
+      # the datasource URL, which is Tempo's HTTP port, and every query fails
+      # with "frame header looked like an HTTP/1.1 header". Results arrive in
+      # one response instead of progressively, which for a laptop-sized Tempo
+      # is no loss. tempo.yaml sets stream_over_http_enabled, so this can be
+      # flipped back on to experiment.
+      streamingEnabled:
+        search: false
+
+  - name: Loki
+    type: loki
+    uid: juno-loki
+    url: http://loki:3100
+    access: proxy
+    jsonData:
+      # Jump from a log line to the trace it belongs to.
+      derivedFields:
+        - name: TraceID
+          matcherRegex: '"traceId":"([a-f0-9]+)"'
+          url: '$${__value.raw}'
+          datasourceUid: juno-tempo

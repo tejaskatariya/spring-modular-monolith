@@ -1,0 +1,47 @@
+// Tails Juno's event log and pushes it to Loki. The repository is mounted
+// read-only, so this never writes to your working tree.
+
+local.file_match "juno" {
+  path_targets = [{
+    __path__ = "/juno-logs/pipeline.jsonl",
+    job      = "juno",
+  }]
+}
+
+loki.source.file "juno" {
+  targets       = local.file_match.juno.targets
+  forward_to    = [loki.process.juno.receiver]
+  tail_from_end = false
+}
+
+loki.process "juno" {
+  forward_to = [loki.write.default.receiver]
+
+  // Pull the fields the dashboard groups by out of each JSON line.
+  stage.json {
+    expressions = {
+      ts    = "ts",
+      event = "event",
+    }
+  }
+
+  // Without this every backfilled line would be stamped with the time Alloy
+  // read it, and cost-over-time would show one spike instead of the run.
+  stage.timestamp {
+    source = "ts"
+    format = "RFC3339"
+  }
+
+  // `event` is a closed set of about 25 values, so promoting it to a label is
+  // cheap and makes every panel query cheaper. itemId and stepId are left in
+  // the line and parsed at query time, where their cardinality costs nothing.
+  stage.labels {
+    values = { event = "event" }
+  }
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

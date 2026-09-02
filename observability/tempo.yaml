@@ -1,0 +1,76 @@
+# Single-binary Tempo: every component runs in one process, blocks go to a
+# local volume. Good for one laptop, not for anything shared.
+target: all
+
+server:
+  http_listen_port: 3200
+
+# Grafana's Tempo datasource streams search results. Without this it opens a
+# gRPC connection against the HTTP port above and fails with "frame header
+# looked like an HTTP/1.1 header". This serves the stream over HTTP instead,
+# so the single published port 3200 is all Grafana needs.
+stream_over_http_enabled: true
+
+# Juno speaks OTLP over HTTP only, so that is the only receiver enabled here.
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  # A Juno run lasts as long as its model calls, over 20 minutes for a
+  # four-step pipeline. TraceQL search returns matching spans from one block
+  # per trace, so a trace cut across several blocks comes back incomplete: at
+  # 5m this run reported 5 of its 8 generation spans. Keep the window wider
+  # than a run so each run lands in a single block.
+  max_block_duration: 1h
+  complete_block_timeout: 1h
+  # The one that actually matters. Tempo cuts a trace into a block once no new
+  # span has arrived for this long, and the default is 5s. Juno's spans arrive
+  # in bursts minutes apart, because a model call runs for minutes without any
+  # span ending, so at 5s a single run is split across several blocks. TraceQL
+  # search then returns matches from one block only and reports part of the
+  # run. This must exceed the longest gap between spans in a run.
+  #
+  # The cost is that a trace is not searchable until this long after its last
+  # span. Fetching it by id still works immediately.
+  trace_idle_period: 15m
+
+compactor:
+  compaction:
+    # Keep two weeks of runs. Raise this if you want longer cost history.
+    block_retention: 336h
+
+# TraceQL metrics. The local-blocks processor keeps a rolling copy of recent
+# spans so queries like `| sum_over_time(span.juno.cost_usd)` can run over them.
+# It processes spans as they arrive and cannot backfill, so it has to be on
+# before the runs you want to chart. No Prometheus is involved: remote_write is
+# empty and Tempo answers the metrics queries itself.
+metrics_generator:
+  processor:
+    local_blocks:
+      flush_to_storage: true
+  storage:
+    path: /var/tempo/generator/wal
+    remote_write: []
+  traces_storage:
+    path: /var/tempo/generator/traces
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+
+overrides:
+  defaults:
+    metrics_generator:
+      processors: [local-blocks]
+    global:
+      # Juno spans carry the full prompt and response when captureContent is
+      # on, so the default 5MB per-trace ceiling is raised here.
+      max_bytes_per_trace: 52428800
