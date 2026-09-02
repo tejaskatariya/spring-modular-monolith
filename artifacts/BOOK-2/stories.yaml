@@ -1,0 +1,203 @@
+stories:
+  - title: Add categories and product-category schema with seed migration
+    description: >
+      Create the new Flyway migration V5__catalog_add_categories.sql in
+      src/main/resources/db/migration/catalog, the next free version number after
+      V4. The migration creates catalog.categories (id, name unique not null, slug
+      unique not null with a check constraint restricting it to lowercase letters,
+      digits, and hyphens) and the link table catalog.product_categories
+      (product_id and category_id, composite primary key, foreign keys to
+      catalog.products(id) and catalog.categories(id)). It then seeds the five
+      categories (Classics/classics, Fantasy/fantasy, Fiction/fiction, Mystery and
+      Thriller/mystery-and-thriller, Young Adult/young-adult) with
+      insert ... on conflict (slug) do nothing, and seeds the product-to-category
+      links for all 15 existing seeded products by joining a literal values list
+      of (product_code, category_slug) pairs against catalog.products and
+      catalog.categories, with on conflict (product_id, category_id) do nothing.
+      Verify by running the migration against a database that already has the
+      15 seeded products and against one with an empty products table, and by
+      confirming no column of catalog.products is touched.
+    acceptanceCriteria:
+      - V5__catalog_add_categories.sql exists in the catalog migration folder and follows the existing V<n>__catalog_*.sql naming convention.
+      - catalog.categories enforces unique name, unique slug, and rejects an insert whose slug contains anything other than lowercase letters, digits, or hyphens.
+      - catalog.product_categories has a composite primary key on (product_id, category_id) and rejects an insert referencing a product id or category id that does not exist.
+      - After migration, catalog.categories contains exactly the five seeded categories with the specified names and slugs.
+      - After migration, catalog.product_categories links all 15 seeded products to categories exactly as specified by product code, including P102 linked to three categories.
+      - A product code from the seed list that is absent from catalog.products causes that link to be skipped without failing the migration.
+      - The migration completes without error against a database that already has the 15 seeded products and against one whose products table is empty.
+      - No existing row in catalog.products has any column (code, name, description, image URL, price, deleted_at) changed by the migration.
+      - Re-running the seed insert statements a second time leaves the category count and the link count unchanged.
+    dependsOn: []
+    estimate: M
+
+  - title: Add automated tests for category migration correctness and performance
+    description: >
+      Add CategoryMigrationTests under
+      src/test/java/com/sivalabs/bookstore/catalog, using the existing
+      TestcontainersConfiguration Postgres container so the real V5 migration runs
+      against a real database. One test starts from the default context with V1
+      through V5 already applied and asserts the Fantasy category page data is
+      exactly The Chronicles of Narnia and A Game of Thrones, that product P102
+      is linked to exactly the fiction, fantasy, and young-adult slugs, and that
+      re-invoking the migration's insert statements leaves the category and link
+      row counts unchanged. A second test starts a fresh container with only V1
+      through V4 applied, batch-inserts 100,000 synthetic catalog.products rows
+      with JdbcTemplate, then runs V5 and asserts it completes in under 60
+      seconds; tag this test @Tag("slow"). Verify by running both tests locally
+      against the Testcontainers Postgres instance.
+    acceptanceCriteria:
+      - A test asserts the fantasy category links resolve to exactly The Chronicles of Narnia and A Game of Thrones, no more and no fewer.
+      - A test asserts product P102 is linked to exactly the categories with slugs fiction, fantasy, and young-adult.
+      - A test asserts that re-applying the migration's seed inserts a second time does not change the row count of catalog.categories or catalog.product_categories.
+      - A test seeds catalog.products with 100,000 rows against a database with only V1 through V4 applied, runs V5, and asserts it completes in under 60 seconds.
+      - The 100,000-row test is annotated @Tag("slow").
+    dependsOn: [Add categories and product-category schema with seed migration]
+    estimate: L
+
+  - title: Add pull request trigger to the CI workflow that gates merges to main
+    description: >
+      .github/workflows/maven.yml currently triggers only on push to main and
+      package-by-* branches, so there is no CI run that blocks a bad merge before
+      it lands. Add a pull_request trigger block targeting main that runs the
+      same ./mvnw -ntp verify step already used by the push trigger. This makes
+      the slow migration performance test run in a pipeline that gates a merge to
+      main, as required. No Maven configuration change is needed since the
+      module has no Surefire or Failsafe exclusion for @Tag("slow") tests today.
+      Verify by opening a pull request against main and confirming the workflow
+      runs and executes the full verify step, including tests tagged slow.
+    acceptanceCriteria:
+      - .github/workflows/maven.yml includes a pull_request trigger targeting main.
+      - The pull_request trigger runs the same ./mvnw -ntp verify step used on push.
+      - Opening a test pull request against main triggers a workflow run that executes the full test suite, including @Tag("slow") tests.
+    dependsOn: []
+    estimate: S
+
+  - title: Add category domain layer (entity, repository, service, DTO)
+    description: >
+      Add CategoryEntity, CategoryRepository, CategoryDto, CategoryMapper,
+      CategoryService, and CategoryNotFoundException under
+      com.sivalabs.bookstore.catalog.domain, mirroring the shape of the existing
+      Product classes. CategoryRepository extends JpaRepository<CategoryEntity,
+      Long> with findBySlugIgnoreCase(String slug) and
+      findAllByOrderByNameAsc(). CategoryService exposes findBySlug(String slug)
+      returning Optional<CategoryDto>, and getForHeader() returning
+      List<CategoryDto> ordered by name. All new files live under
+      com.sivalabs.bookstore.catalog, so no other module is touched and the
+      existing Spring Modulith ModularityTests keeps passing. Verify with unit
+      or slice tests against the schema from the migration story: a slug lookup
+      is case-insensitive, an unknown slug returns empty, and the header list is
+      ordered by name.
+    acceptanceCriteria:
+      - CategoryRepository.findBySlugIgnoreCase matches a stored slug regardless of the case of the input, for example both "Fiction" and "FICTION" resolve to the fiction category.
+      - CategoryRepository.findAllByOrderByNameAsc returns categories ordered by name ascending; two calls against unchanged data return the same order.
+      - CategoryService.findBySlug returns an empty Optional for a slug that matches no category.
+      - CategoryService.getForHeader returns one CategoryDto per row in catalog.categories.
+      - All new classes live under com.sivalabs.bookstore.catalog, and the existing ModularityTests module verification still passes.
+    dependsOn: [Add categories and product-category schema with seed migration]
+    estimate: M
+
+  - title: Add category-filtered product listing query
+    description: >
+      Add a native query method on the existing ProductRepository,
+      findByCategoryIdAndDeletedAtIsNull(Long categoryId, Pageable pageable),
+      that joins catalog.products to catalog.product_categories on category id,
+      excludes rows with deleted_at set, and orders by name ascending then code
+      ascending as a tie-break. The category id is a bind parameter, never
+      concatenated into SQL. Add ProductService.getProductsByCategory(Long
+      categoryId, int pageNo), reusing the same page-clamping expression already
+      used by getProducts (pageNo <= 1 ? 0 : pageNo - 1) and the same page size,
+      and returning a PagedResult<ProductDto> built from the same Page object
+      used for both the page of products and the total count. Verify with a
+      repository or service test seeded with the migration data: a category
+      query returns only that category's non-deleted products, in the right
+      order, and a page number past the last page returns an empty content list
+      with correct totalElements and totalPages rather than an error.
+    acceptanceCriteria:
+      - findByCategoryIdAndDeletedAtIsNull returns only products linked to the given category id.
+      - A product whose deleted_at is set is excluded from the category query and from its count, even when queried by a category that includes it.
+      - A product linked to more than one category appears in the results for each of those categories.
+      - Results are ordered by name ascending, with product code as the tie-break for equal names.
+      - getProductsByCategory with pageNo 0 or a negative number returns the first page, matching the existing getProducts clamping behavior.
+      - getProductsByCategory with a pageNo past the last page returns an empty content list along with a correct totalElements and totalPages, and does not throw.
+      - The total count and the page of products come from the same query result, with no separate count query path.
+    dependsOn: [Add categories and product-category schema with seed migration]
+    estimate: S
+
+  - title: Extend the products endpoint to support browsing by category
+    description: >
+      Extend ProductWebController.showProducts with an optional category
+      request parameter. When category is null, empty, or blank after trimming,
+      behave exactly as /products does today with no category filter. When the
+      trimmed value is longer than 100 characters, treat it as no match. Otherwise
+      look up the category case-insensitively through CategoryService.findBySlug;
+      if none matches, throw CategoryNotFoundException with the message
+      "Category not found: <slug>". Add a catch handler for
+      CategoryNotFoundException in CatalogExceptionHandler that renders the
+      existing error/404 view with HTTP 404, following the same pattern already
+      used for ProductNotFoundException, and logs a warning including the
+      requested slug. When a category matches, call
+      ProductService.getProductsByCategory and add the matched CategoryDto to the
+      model under the key "category", alongside the existing productsPage key.
+      Update partials/products.html to show the category name as a heading and
+      the product count when category is set, plus an empty-state block with the
+      message "No products in this category yet" and a link back to /products
+      when the category has no visible products. Update partials/pagination.html
+      to carry the category slug on every generated link (htmx and plain href)
+      so paging stays within the category and the browser URL reflects both
+      category and page. Verify by loading /products?category=fiction,
+      /products?category=Fiction (case-insensitive match), /products?category=
+      (falls back to the full listing), /products?category=doesnotexist (404
+      with the exact message), and a category with only soft-deleted products
+      (empty-state message and link).
+    acceptanceCriteria:
+      - GET /products?category=fiction renders only Fiction's products, with the category name as the heading and a count of visible products.
+      - GET /products?category=Fiction and GET /products?category=fiction return the same result.
+      - GET /products, GET /products?category=, and GET /products?category=%20 all render the full catalogue exactly as /products does today, same order and page size.
+      - GET /products?category=doesnotexist returns HTTP 404 with the message "Category not found: doesnotexist", not an empty product grid.
+      - A category value longer than 100 characters returns the same 404 behavior as an unknown slug, with no database lookup for the category.
+      - A category with no visible products shows its heading, a count of 0, the message "No products in this category yet", and a working link to /products.
+      - Pagination links on a category page include the category parameter, so moving to page 2 stays within that category, and the resulting URL reproduces the same page when opened directly.
+      - Product cards on a category page have the same content and Add to Cart behavior as cards on the full listing.
+      - An unauthenticated visitor, a signed-in member, and a signed-in admin all see identical results for the same category URL, and soft-deleted products never appear for any of them.
+      - The /admin/** area, WebSecurityConfig, and no file outside com.sivalabs.bookstore.catalog change as part of this story.
+      - Category browsing works for both a full page load and an htmx partial request, returning products or partials/products respectively.
+      - Passing punctuation, quotes, SQL-like fragments, or percent-encoded bytes as the category value never produces a server error, only a category page or the 404 page.
+    dependsOn:
+      - Add category domain layer (entity, repository, service, DTO)
+      - Add category-filtered product listing query
+    estimate: L
+
+  - title: Add category navigation to the site header
+    description: >
+      Add a Spring @ControllerAdvice in com.sivalabs.bookstore.catalog.web with a
+      @ModelAttribute("headerCategories") method that calls
+      CategoryService.getForHeader(), with no basePackages restriction so it runs
+      for every controller in the application including cart, orders, and login.
+      Wrap the call in a try/catch: on failure, log a warning with enough detail
+      to identify the cause and return an empty list, so the page still renders
+      with HTTP 200 and no category area. Add a new template
+      partials/category-nav.html (fragment name nav) that renders a link per
+      header category ordered by name, and marks the current category's entry as
+      active by comparing its slug to the "category" model attribute set by the
+      products controller when a category page is being viewed. Change
+      layout.html by exactly one line to reference this fragment inside the
+      existing navbar; this is the only file outside the catalog packages this
+      item changes. Verify by loading a non-catalog page (for example /cart or
+      the login page) and confirming the header shows all five seeded categories
+      in name order, by opening a category page and confirming that category's
+      header entry is visually marked current, and by simulating a database
+      failure and confirming the page still renders with an empty header and no
+      error surfaced to the user.
+    acceptanceCriteria:
+      - Every storefront page rendered with the shared layout, including /products, cart, orders, login, and registration, shows the header category navigation.
+      - Header entries are ordered by category name ascending, matching Classics, Fantasy, Fiction, Mystery and Thriller, Young Adult with the seed data.
+      - Each header entry links to that category's listing page and, when clicked, loads a full page rather than an htmx partial request.
+      - While viewing a category page, that category's header entry is visually distinguishable from the others; on /products with no category selected, no entry is marked current.
+      - Rendering any single page issues at most one database query for the header categories.
+      - When the header category query fails, for example because the database is unreachable, the page still renders with HTTP 200 and no category area, and a warning is logged with enough detail to identify the cause, with nothing shown to the shopper.
+      - A page rendered against a database with zero categories renders the header with no category area and no error.
+      - layout.html's diff is limited to one line referencing the new category-nav fragment; the fragment and its data live in the catalog module.
+    dependsOn:
+      - Add category domain layer (entity, repository, service, DTO)
+      - Extend the products endpoint to support browsing by category
+    estimate: M
