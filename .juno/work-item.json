@@ -1,0 +1,23 @@
+{
+  "cursor": { "source": "from-file" },
+  "items": [
+    {
+      "id": "BOOK-1",
+      "title": "Product search and filtering",
+      "body": "Shoppers can only browse the full product list today, so finding a specific book means scrolling. Add search by title and author, filtering by price range, and sorting by price or title, with paged results. Use Postgres full-text search with a generated tsvector column and a GIN index rather than LIKE scans. An empty search returns the full catalogue. The migration that adds the index must run cleanly against a database that already has products in it. All work stays inside the catalog module.",
+      "state": "Gathering",
+      "labels": ["juno"],
+      "dependsOn": [],
+      "meta": { "source": "from-file" }
+    },
+    {
+      "id": "BOOK-2",
+      "title": "Categories with browse-by-category",
+      "body": "Products have no grouping, so there is no way to browse a subject area. Add a category entity in the catalog schema with a many-to-many link to products, category navigation in the site header rendered from the database, and a paged category listing page. A product can belong to more than one category. Include seed data for at least three categories. All work stays inside the catalog module.",
+      "state": "Gathering",
+      "labels": ["juno"],
+      "dependsOn": [],
+      "meta": { "source": "from-file" }
+    }
+  ]
+}

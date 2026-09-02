@@ -1,0 +1,20 @@
+name: spec-quality
+scale: 10
+threshold: 8.0
+dimensions:
+  - id: completeness
+    weight: 0.4
+    floor: 6
+    description: >
+      Every requirement of the work item is covered; permissions, audit, and
+      multi-tenant behaviour are explicit; edge cases enumerated.
+  - id: clarity
+    weight: 0.3
+    description: >
+      Numbered, testable requirements a new team member could implement from,
+      with no internal contradictions.
+  - id: feasibility
+    weight: 0.3
+    description: >
+      Respects the business constraints: no synchronous email, no cross-tenant
+      access, no breaking API changes.

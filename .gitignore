@@ -40,3 +40,7 @@ out/
 .vscode/
 
 *.log
+
+# Python bytecode from the Juno plugin scripts
+__pycache__/
+*.pyc

@@ -1,0 +1,8 @@
+# Juno runtime state (machine-written); the rest of .juno/ is your config
+runs/
+state/
+logs/
+worktrees/
+trigger-cursor.json
+# plugin credentials; never committed
+.env

@@ -1,0 +1,257 @@
+apiVersion: juno/v1
+name: spec-pipeline
+
+# Where steps execute. The default, `local`, runs every step in the project
+# root. `worktree` gives each item an isolated checkout at
+# .juno/worktrees/<itemId> on branch juno/<itemId>, created from HEAD on the
+# item's first step and removed when the item reaches a terminal state. When
+# you enable it, remove the git-branch.py beforeStep hook below: the
+# worktree is already on the item's branch, so the hook only re-checks-out
+# the current branch (harmless, but redundant).
+# environment: worktree
+#
+# With the worktree environment, a pass may advance several items at once;
+# without it, more than 1 fails validation.
+# maxParallelItems: 2
+
+# from-file.py reads .juno/work-item.json, so the whole workflow runs offline.
+# Switching to Linear is this one line:
+#   command: ./.juno/plugins/linear-poll.py
+trigger:
+  command: ./.juno/plugins/from-file.py
+  intervalSeconds: 60
+  timeoutSeconds: 30
+
+defaults:
+  runner: claude
+  # Placeholder model names: set these to whatever you are actually running.
+  model: claude-sonnet-5
+  maxRounds: 3
+  maxTurns: 30
+  timeoutSeconds: 900
+
+states: [Gathering, Specifying, TechSpeccing, Decomposing, PublishingDocs, Done, NeedsRework]
+terminalStates: [Done, NeedsRework]
+
+# Workflow-level hooks run for every step. A step may declare its own
+# beforeStep/afterStep under its `hooks:` block; around an agent round the
+# global hooks wrap the step's own (global before -> step before -> work ->
+# step after -> global after). On a script step only the step's own hooks
+# run, once around the command, with no round in scope.
+hooks:
+  beforeStep:
+    - command: ./.juno/plugins/git-branch.py
+      onFailure: block
+      timeoutSeconds: 60
+      when: "round == 1"
+  afterStep:
+    - command: ./.juno/plugins/git-commit.py
+      onFailure: warn
+      timeoutSeconds: 60
+    # - command: ./.juno/plugins/linear-comment.py
+    #   onFailure: ignore
+    #   timeoutSeconds: 30
+  # onTransition:
+  #   - command: ./.juno/plugins/linear-set-lane.py
+  #     onFailure: block
+  #     timeoutSeconds: 30
+  # Fires once, when an item reaches a terminal state. Juno renders the facts in
+  # feedback.md and never says what to change in the files it names; this asks a
+  # model to fill that in below Juno's marker, where a later rewrite preserves it
+  # (ADR-0016). `ignore` because a missing CLI or a slow call must not touch an
+  # item that has already finished.
+  onComplete:
+    - command: ./.juno/plugins/feedback-analysis.py
+      onFailure: ignore
+      timeoutSeconds: 180
+
+# OpenTelemetry export, off by default. Turn `enabled` on and point
+# OTEL_EXPORTER_OTLP_ENDPOINT at any OTLP/HTTP endpoint: Langfuse, Grafana
+# Tempo, Elastic, Jaeger, or an OpenTelemetry Collector. Juno writes both the
+# GenAI semantic conventions and Langfuse's own attribute keys on every span,
+# so no backend needs a mapping written for it. See docs/OBSERVABILITY.md.
+#
+# Needs the optional extra: `uv sync --extra otel`.
+telemetry:
+  enabled: true
+  serviceName: juno
+  # minimal = pass, item and step. normal = plus rounds, model calls,
+  # evaluators, scripts, hooks and transitions. verbose = plus every traced
+  # side effect.
+  detail: normal
+  # Off by default: a prompt carries the item body and your business context,
+  # so sending it to a collector is a deliberate choice.
+  captureContent: true
+
+steps:
+  # Fetches the wiki pages this item needs and writes them to
+  # artifacts/<id>/context/external.md, which the spec step reads below
+  # (ADR-0011). It is a step rather than a hook because pre-flight runs before
+  # hooks and gates the templated context path: a beforeStep hook would park
+  # the item before it could fetch.
+  - id: gather-context
+    type: script
+    inputState: Gathering
+    command: ./.juno/plugins/fetch-context.py
+    timeoutSeconds: 120
+    routes:
+      success: Specifying
+      failure: NeedsRework
+    # What this step writes. Downstream steps may then name it in `context:` or
+    # `requires:`; without this the input-wiring check rejects the path, because
+    # nothing else in the workflow says it can ever exist.
+    produces:
+      - artifacts/{{item.id}}/context/external.md
+    # Global afterStep hooks are round-scoped and do not fire on a script step,
+    # so the commit is declared here. Without it the fetched file is lost when
+    # the worktree environment removes the item's checkout.
+    hooks:
+      afterStep:
+        - command: ./.juno/plugins/git-commit.py
+          onFailure: warn
+          timeoutSeconds: 60
+
+  - id: spec
+    inputState: Specifying
+    onConverged: TechSpeccing
+    onExhausted: NeedsRework
+    maxRounds: 3
+    generator:
+      prompt: file://.juno/prompts/spec.md
+      model: claude-opus-5
+      tools: [Read, Write, Grep, Glob]
+      # Claude Code skills. `invoke` runs one skill every round (the runner
+      # puts /juno-spec-writer at the head of the prompt); `available` skills
+      # are merely granted and Claude decides from their descriptions. Skills
+      # live in .claude/skills/ (project) or ~/.claude/skills/ (personal);
+      # `juno init` installs this sample. The Skill tool is granted for you.
+      skills:
+        invoke: juno-spec-writer
+        # available: [house-style]
+      # MCP servers this role may reach, as file:// refs to config files in the
+      # .mcp.json shape. Declaring one grants no tool, so uncomment the second
+      # `tools` line with the mcpServers block: `juno validate` rejects a server
+      # with no matching grant, and a grant naming no declared server. Juno
+      # passes --strict-mcp-config, so a step sees exactly these servers and
+      # none your machine happens to have configured. Keep credentials out of
+      # the config file itself; .juno/ is committed, so reference an environment
+      # variable and set it in .juno/.env.
+      #
+      # `mcp__linear` grants every tool that server provides; narrow it to
+      # `mcp__linear__<tool>` once you know which ones you want.
+      # tools: [Read, Write, Grep, Glob, mcp__linear]
+      # mcpServers:
+      #   - file://.juno/mcp/linear.json
+    evaluator:
+      prompt: file://.juno/prompts/eval-spec.md
+      model: claude-sonnet-5
+      tools: [Read, Grep, Glob]
+    rubric: file://.juno/rubrics/spec.yaml
+    # The first is checked in and applies to every item; the second is
+    # whatever gather-context fetched for this one.
+    context:
+      - file://.juno/context/business-context.md
+      - file://artifacts/{{item.id}}/context/external.md
+    output: artifacts/{{item.id}}/spec.md
+    # Step-level hooks: this one fires after each spec round only.
+    hooks:
+      afterStep:
+        - command: ./.juno/plugins/notify.py
+          onFailure: ignore
+          timeoutSeconds: 10
+
+  - id: tech-spec
+    inputState: TechSpeccing
+    onConverged: Decomposing
+    onExhausted: NeedsRework
+    # Declared once here and inherited by both roles below. A role that declares
+    # its own mcpServers replaces this list for itself, which is how you give
+    # the judge narrower reach than the writer. The same three-level merge
+    # (defaults, then step, then role) applies to pluginDirs and settingSources.
+    #
+    # Serena is a code-intelligence server: it lets the model ask where a symbol
+    # is defined and who calls it, instead of grepping. It takes its project
+    # from the working directory, which under `environment: worktree` is the
+    # item's own checkout, so each item is indexed against its own code.
+    # mcpServers:
+    #   - file://.juno/mcp/serena.json
+    generator:
+      prompt: file://.juno/prompts/tech-spec.md
+      tools: [Read, Write, Grep, Glob]
+      # tools: [Read, Write, Grep, Glob, mcp__serena]
+    evaluator:
+      prompt: file://.juno/prompts/eval-tech-spec.md
+      # The judge gets the same reach, so it can check that a class the tech
+      # spec names actually exists rather than trusting the document. It gets no
+      # Write, which is why the tool lists stay per role.
+      tools: [Read, Grep, Glob]
+      # tools: [Read, Grep, Glob, mcp__serena]
+    rubric: file://.juno/rubrics/tech-spec.yaml
+    # Checked before the step starts: no run directory, no branch, no model
+    # call until the spec step's deliverable is there and non-empty. A missing
+    # input parks the item in this step's failure lane (onExhausted here,
+    # routes.failure for a script step) unless onMissingInput says otherwise.
+    requires:
+      - file://artifacts/{{item.id}}/spec.md
+    context:
+      - file://artifacts/{{item.id}}/spec.md
+    output: artifacts/{{item.id}}/tech-spec.md
+
+  - id: decompose
+    type: agent
+    inputState: Decomposing
+    onConverged: PublishingDocs
+    onExhausted: NeedsRework
+    generator:
+      prompt: file://.juno/prompts/decompose.md
+      tools: [Read, Write, Grep, Glob]
+    # Evaluators run in order and stop at the first failure, so the cheap
+    # deterministic check runs first and a malformed stories.yaml never spends
+    # tokens on the LLM judge. A step whose evaluators are all scripts needs no
+    # rubric at all.
+    evaluator:
+      - type: script
+        id: shape
+        command: ./.juno/plugins/check-stories.py
+        timeoutSeconds: 60
+      - type: agent
+        id: judge
+        prompt: file://.juno/prompts/eval-decompose.md
+        tools: [Read, Grep, Glob]
+    rubric: file://.juno/rubrics/decompose.yaml
+    requires:
+      - file://artifacts/{{item.id}}/spec.md
+      - file://artifacts/{{item.id}}/tech-spec.md
+    context:
+      - file://artifacts/{{item.id}}/spec.md
+      - file://artifacts/{{item.id}}/tech-spec.md
+    output: artifacts/{{item.id}}/stories.yaml
+
+  # - id: create-stories
+  #   type: script
+  #   inputState: CreatingStories
+  #   command: ./.juno/plugins/linear-create-stories.py
+  #   timeoutSeconds: 120
+  #   # The plugin parses this file, so Juno checks it parses first: a malformed
+  #   # stories.yaml parks the item rather than half-creating Linear issues.
+  #   requires:
+  #     - path: file://artifacts/{{item.id}}/stories.yaml
+  #       parse: yaml
+  #   routes:
+  #     success: PublishingDocs
+  #     failure: NeedsRework
+  #   # Script steps take per-step hooks too; they run once around the command.
+  #   hooks:
+  #     afterStep:
+  #       - command: ./.juno/plugins/notify.py
+  #         onFailure: ignore
+  #         timeoutSeconds: 10
+
+  - id: open-pr
+    type: script
+    inputState: PublishingDocs
+    command: ./.juno/plugins/git-open-pr.py
+    timeoutSeconds: 120
+    routes:
+      success: Done
+      failure: NeedsRework

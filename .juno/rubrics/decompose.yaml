@@ -1,0 +1,19 @@
+name: decomposition-quality
+scale: 10
+threshold: 8.0
+dimensions:
+  - id: completeness
+    weight: 0.4
+    floor: 6
+    description: >
+      The YAML parses; every element of the tech spec appears in some story;
+      no invented scope.
+  - id: independence
+    weight: 0.3
+    description: >
+      Stories are independently shippable; the dependency graph is acyclic;
+      estimates fit S/M/L.
+  - id: testability
+    weight: 0.3
+    description: >
+      Every story has acceptance criteria a reviewer can verify.
