@@ -1,0 +1,20 @@
+name: tech-spec-quality
+scale: 10
+threshold: 8.0
+dimensions:
+  - id: coverage
+    weight: 0.4
+    floor: 6
+    description: >
+      Every product-spec requirement has a design element; every async
+      behaviour has a retry and failure story.
+  - id: soundness
+    weight: 0.4
+    floor: 6
+    description: >
+      Tenant isolation holds in the data model; permission checks stated at
+      the API layer; migrations safe online.
+  - id: traceability
+    weight: 0.2
+    description: >
+      Statements trace to the product spec; deviations are marked and justified.
