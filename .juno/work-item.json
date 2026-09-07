@@ -18,6 +18,28 @@
       "labels": ["juno"],
       "dependsOn": [],
       "meta": { "source": "from-file" }
+    },
+    {
+      "id": "BOOK-5",
+      "title": "Authors as first-class entities",
+      "body": "The author is stored as a plain string on the product, so there is no way to list everything by one author. Replace it with an author entity and add an author page listing that author's books. Migrate existing author strings into the new table without losing data, then drop the old column in a separate migration so the two steps can be reviewed independently. The product page links to the author page. All work stays inside the catalog module.",
+      "state": "Gathering",
+      "labels": ["juno"],
+      "dependsOn": [],
+      "meta": {
+        "source": "from-file"
+      }
+    },
+    {
+      "id": "BOOK-6",
+      "title": "Product images",
+      "body": "Product pages have no imagery. Support multiple images per product with one designated as primary, served by the application, and shown as an ordered gallery on the detail page. The listing page uses the primary image. A product with no images falls back to a placeholder. Image ordering is stable across requests. The tech spec must decide where the image bytes live before implementation starts. All work stays inside the catalog module.",
+      "state": "Gathering",
+      "labels": ["juno"],
+      "dependsOn": [],
+      "meta": {
+        "source": "from-file"
+      }
     }
   ]
 }

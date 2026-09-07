@@ -8,11 +8,11 @@ name: spec-pipeline
 # you enable it, remove the git-branch.py beforeStep hook below: the
 # worktree is already on the item's branch, so the hook only re-checks-out
 # the current branch (harmless, but redundant).
-# environment: worktree
+environment: worktree
 #
 # With the worktree environment, a pass may advance several items at once;
 # without it, more than 1 fails validation.
-# maxParallelItems: 2
+maxParallelItems: 2
 
 # from-file.py reads .juno/work-item.json, so the whole workflow runs offline.
 # Switching to Linear is this one line:
@@ -78,7 +78,7 @@ telemetry:
   # minimal = pass, item and step. normal = plus rounds, model calls,
   # evaluators, scripts, hooks and transitions. verbose = plus every traced
   # side effect.
-  detail: normal
+  detail: verbose
   # Off by default: a prompt carries the item body and your business context,
   # so sending it to a collector is a deliberate choice.
   captureContent: true
