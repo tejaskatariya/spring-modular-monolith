@@ -141,7 +141,8 @@ stories:
         the category's display name and product count in the model.
       - GET /products?category=Fantasy and GET /products?category=fantasy return the same
         page.
-      - GET /products?category=does-not-exist returns HTTP 404 with model attribute
+      - >
+        GET /products?category=does-not-exist returns HTTP 404 with model attribute
         errorMessage equal to "Category not found: does-not-exist", rendered through
         CatalogExceptionHandler's existing error/404 view.
       - GET /products?category=fantasy&page=0 and page=-1 both render page 1 of Fantasy.
