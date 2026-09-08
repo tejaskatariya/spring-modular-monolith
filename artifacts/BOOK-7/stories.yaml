@@ -38,6 +38,11 @@ stories:
         completes without error, skipping only the links for that code.
       - The migration adds, alters, and drops no column of catalog.products.
       - No file outside src/main/resources/db/migration/catalog changes for this story.
+      - >
+        The SHARE ROW EXCLUSIVE lock this migration's foreign key creation takes on
+        catalog.products for its duration is a documented risk in the tech spec, not
+        something this story adds an automated test for; a reviewer should not expect a
+        locking or concurrency test here.
     dependsOn: []
     estimate: M
 
@@ -154,6 +159,28 @@ stories:
         quotes, or percent-encoded bytes returns the 404 page, never a server error.
       - Existing /products and /products?page=N URLs and their existing tests keep passing
         unchanged.
+      - >
+        com.sivalabs.bookstore.config.WebSecurityConfig has no diff after this story: a
+        code-level check (e.g. a git diff assertion in review, or an ArchitectureTests-style
+        guard) confirms this file is untouched, since the ?category= parameter on the
+        already-public GET /products is what avoids needing a security rule change.
+      - A signed-in ROLE_USER request to GET /products?category=fantasy and to the header
+        categories returns the same category list and the same products as an anonymous
+        guest request, byte-for-byte.
+      - A signed-in ROLE_ADMIN request to GET /products?category=fantasy and to the header
+        categories returns the same category list and the same products as an anonymous
+        guest request, including that a soft-deleted product stays hidden for the admin too.
+      - Every page and screen under /admin/** renders and behaves exactly as it did before
+        this change, with no new category controls, field, or link added anywhere in the
+        admin area.
+      - >
+        When the category-filtered product query fails (for example the database is
+        unreachable during GET /products?category=fantasy), the response is the
+        application's standard error page (error/500) with no stack trace and no database
+        object or table name in the rendered message, rendered through
+        CatalogExceptionHandler's existing generic exception handling. This is distinct from
+        the header-only degradation covered in "Add category navigation to site header":
+        here the whole category-page request fails, not just the header area.
     dependsOn:
       - Add product-category link entity and category-filtered product query
     estimate: M
@@ -232,6 +259,13 @@ stories:
       - layout.html's diff for this story is limited to a single th:replace reference; no
         other file outside the catalog module's packages changes.
       - ArchitectureTests and ModularityTests pass unchanged.
+      - >
+        A category whose linked products are all soft-deleted (so its own listing page is
+        empty) still appears in the header navigation alongside the other four categories.
+        This is checked separately from the empty-category-page behavior in "Add category
+        listing page templates and paged empty state," because the header is populated by
+        CategoryService.getAllCategories() and the page is populated by the filtered product
+        query, two independent code paths that must each be verified.
     dependsOn:
       - Add Category domain model and service
     estimate: M
